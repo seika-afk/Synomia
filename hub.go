@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"log"
 	"sync"
 )
 
@@ -58,13 +60,28 @@ func (s *Session) run() {
 			if _, ok := s.Clients[client]; ok {
 				delete(s.Clients, client)
 				close(client.send)
-				s.Mu.Unlock()
 			}
+
+			s.Mu.Unlock()
 		case message := <-s.Broadcast:
+			var msg Message
+			err := json.Unmarshal(message, &msg)
+			//fmt.Println("MESSAGE RECIEVED AND APPENDED")
+			if err != nil {
+				log.Printf("ignoring malformed message ")
+				continue
+			}
+
 			s.Mu.Lock()
+			s.Messages = append(s.Messages, msg)
 			for client := range s.Clients {
+				if client.id == msg.ClientID {
+					continue
+				}
 				select {
+
 				case client.send <- message:
+
 				default:
 					close(client.send)
 					delete(s.Clients, client)
@@ -73,5 +90,6 @@ func (s *Session) run() {
 			s.Mu.Unlock()
 
 		}
+
 	}
 }

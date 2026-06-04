@@ -12,6 +12,7 @@ import (
 type Client struct {
 	session    *Session
 	id         string
+	username   string
 	conn       *websocket.Conn
 	send       chan []byte
 	registered chan struct{}
@@ -53,15 +54,40 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		var message Message
 
-		err = json.Unmarshal(msg, &message)
-		if err == nil {
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(msg, &envelope); err != nil {
+			continue
+		}
+
+		if _, ok := envelope["typing"]; ok {
+			var typing Typing_indicator
+			if err := json.Unmarshal(msg, &typing); err != nil {
+				continue
+			}
+			typing.Username = c.username
+
 			select {
-			case c.session.Broadcast <- broadcastMessage{sender: c, payload: msg}:
+			case c.session.TypingIndicator <- typing:
 			case <-c.session.done:
 				return
 			}
+			continue
+		}
+
+		if _, ok := envelope["text"]; !ok {
+			continue
+		}
+
+		var message Message
+		if err := json.Unmarshal(msg, &message); err != nil {
+			continue
+		}
+
+		select {
+		case c.session.Broadcast <- broadcastMessage{sender: c, payload: msg}:
+		case <-c.session.done:
+			return
 		}
 	}
 
@@ -122,7 +148,10 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 
 	session := sm.getSession(join.SessionID)
 
-	client := &Client{session: session, id: join.ClientID, conn: conn, send: make(chan []byte, 256), registered: make(chan struct{})}
+	client := &Client{session: session, id: join.ClientID, username: join.UserName, conn: conn, send: make(chan []byte, 256), registered: make(chan struct{})}
+	if client.username == "" {
+		client.username = client.id + "user"
+	}
 	client.session.Register <- client
 	<-client.registered
 

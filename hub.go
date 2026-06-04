@@ -12,7 +12,8 @@ type Session struct {
 	Messages []Message
 	Clients  map[*Client]bool
 
-	Broadcast chan broadcastMessage
+	Broadcast       chan broadcastMessage
+	TypingIndicator chan Typing_indicator
 
 	Register   chan *Client
 	Unregister chan *Client
@@ -37,9 +38,10 @@ func newSession(id string) *Session {
 		Messages: make([]Message, 0),
 		Clients:  make(map[*Client]bool),
 
-		Broadcast:  make(chan broadcastMessage, 256),
-		Register:   make(chan *Client, 256),
-		Unregister: make(chan *Client, 256),
+		Broadcast:       make(chan broadcastMessage, 256),
+		TypingIndicator: make(chan Typing_indicator, 256),
+		Register:        make(chan *Client, 256),
+		Unregister:      make(chan *Client, 256),
 	}
 }
 
@@ -78,12 +80,38 @@ func (s *Session) run() {
 				close(client.send)
 			}
 			empty := len(s.Clients) == 0
-			s.Mu.Unlock()
+			recipients := make([]*Client, 0, len(s.Clients))
+			for c := range s.Clients {
+				if c == client {
+					continue
+				}
+				recipients = append(recipients, c)
+			}
 
 			if empty {
 				s.manager.removeSession(s.ID)
 				close(s.done)
+				s.Mu.Unlock()
 				return
+			}
+			dis_msg := Join_sign{Kind: "Disconnect", ClientID: client.id, SessionID: client.session.ID}
+			payload, err := json.Marshal(dis_msg)
+			if err != nil {
+				log.Printf("ignoring malformed message ")
+
+				s.Mu.Unlock()
+				continue
+			}
+			s.Mu.Unlock()
+			for _, c := range recipients {
+				select {
+				case c.send <- payload:
+				default:
+					close(c.send)
+					s.Mu.Lock()
+					delete(s.Clients, c)
+					s.Mu.Unlock()
+				}
 			}
 		case broadcast := <-s.Broadcast:
 			var msg Message
@@ -115,6 +143,27 @@ func (s *Session) run() {
 				return
 			}
 
+		case typ := <-s.TypingIndicator:
+			payload, _ := json.Marshal(typ)
+			s.Mu.Lock()
+			for client := range s.Clients {
+				if client.username == typ.Username {
+					continue
+				}
+				select {
+				case client.send <- payload:
+				default:
+					close(client.send)
+					delete(s.Clients, client)
+				}
+			}
+			empty := len(s.Clients) == 0
+			s.Mu.Unlock()
+			if empty {
+				s.manager.removeSession(s.ID)
+				close(s.done)
+				return
+			}
 		}
 
 	}

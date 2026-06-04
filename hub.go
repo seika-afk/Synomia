@@ -54,6 +54,7 @@ func (s *Session) run() {
 		case client := <-s.Register:
 			s.Mu.Lock()
 			s.Clients[client] = true
+			close(client.registered)
 			s.Mu.Unlock()
 		case client := <-s.Unregister:
 			s.Mu.Lock()

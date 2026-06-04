@@ -7,6 +7,11 @@ type Join_sign struct {
 }
 
 type Message struct {
-	ClientID string `json:"client_id"`
-	Content  string `json:"content`
+	ClientID  string `json:"client_id"`
+	Text      string `json:"text"`
+	TimeStamp string `json:"time_stamp"`
+}
+
+type History struct {
+	Messages []Message
 }

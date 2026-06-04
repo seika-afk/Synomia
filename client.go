@@ -10,10 +10,11 @@ import (
 )
 
 type Client struct {
-	session *Session
-	id      string
-	conn    *websocket.Conn
-	send    chan []byte
+	session    *Session
+	id         string
+	conn       *websocket.Conn
+	send       chan []byte
+	registered chan struct{}
 }
 
 const (
@@ -55,7 +56,6 @@ func (c *Client) readPump() {
 		if err == nil {
 			c.session.Broadcast <- msg
 		}
-
 	}
 
 }
@@ -106,11 +106,13 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	err = conn.ReadJSON(&join)
 	if join.Kind == "join" {
 		log.Printf("client joined session=%s client_id=%s ", join.SessionID, join.ClientID)
+
 	}
 	session := sm.getSession(join.SessionID)
 
-	client := &Client{session: session, id: join.ClientID, conn: conn, send: make(chan []byte, 256)}
+	client := &Client{session: session, id: join.ClientID, conn: conn, send: make(chan []byte, 256), registered: make(chan struct{})}
 	client.session.Register <- client
+	<-client.registered
 
 	go client.writePump()
 	go client.readPump()
@@ -120,8 +122,18 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.Mu.Lock()
+	historyMessages := append([]Message(nil), session.Messages...)
+	session.Mu.Unlock()
+
+	message_hist_json, err := json.Marshal(History{Messages: historyMessages})
+	if err != nil {
+		return
+	}
+
+	session.Mu.Lock()
 	for otherClient := range session.Clients {
 		if otherClient == client {
+			otherClient.send <- message_hist_json
 			continue
 		}
 		select {

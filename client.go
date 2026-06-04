@@ -38,7 +38,10 @@ var upgrader = websocket.Upgrader{
 
 func (c *Client) readPump() {
 	defer func() {
-		c.session.Unregister <- c
+		select {
+		case c.session.Unregister <- c:
+		case <-c.session.done:
+		}
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
@@ -54,7 +57,11 @@ func (c *Client) readPump() {
 
 		err = json.Unmarshal(msg, &message)
 		if err == nil {
-			c.session.Broadcast <- msg
+			select {
+			case c.session.Broadcast <- broadcastMessage{sender: c, payload: msg}:
+			case <-c.session.done:
+				return
+			}
 		}
 	}
 
@@ -104,10 +111,15 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	}
 	var join Join_sign
 	err = conn.ReadJSON(&join)
-	if join.Kind == "join" {
-		log.Printf("client joined session=%s client_id=%s ", join.SessionID, join.ClientID)
-
+	if err != nil || join.Kind != "join" || join.SessionID == "" || join.ClientID == "" {
+		conn.Close()
+		if err != nil {
+			log.Printf("invalid join payload: %v", err)
+		}
+		return
 	}
+	log.Printf("client joined session=%s client_id=%s ", join.SessionID, join.ClientID)
+
 	session := sm.getSession(join.SessionID)
 
 	client := &Client{session: session, id: join.ClientID, conn: conn, send: make(chan []byte, 256), registered: make(chan struct{})}
@@ -130,10 +142,15 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	select {
+	case client.send <- message_hist_json:
+	case <-session.done:
+		return
+	}
+
 	session.Mu.Lock()
 	for otherClient := range session.Clients {
 		if otherClient == client {
-			otherClient.send <- message_hist_json
 			continue
 		}
 		select {

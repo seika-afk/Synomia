@@ -7,14 +7,16 @@ import (
 )
 
 type Session struct {
+	manager  *SessionManager
 	ID       string
 	Messages []Message
 	Clients  map[*Client]bool
 
-	Broadcast chan []byte
+	Broadcast chan broadcastMessage
 
 	Register   chan *Client
 	Unregister chan *Client
+	done       chan struct{}
 	Mu         sync.Mutex
 }
 
@@ -23,15 +25,21 @@ type SessionManager struct {
 	Mu       sync.Mutex
 }
 
+type broadcastMessage struct {
+	sender  *Client
+	payload []byte
+}
+
 func newSession(id string) *Session {
 	return &Session{
+		done:     make(chan struct{}),
 		ID:       id,
 		Messages: make([]Message, 0),
 		Clients:  make(map[*Client]bool),
 
-		Broadcast:  make(chan []byte),
-		Register:   make(chan *Client),
-		Unregister: make(chan *Client),
+		Broadcast:  make(chan broadcastMessage, 256),
+		Register:   make(chan *Client, 256),
+		Unregister: make(chan *Client, 256),
 	}
 }
 
@@ -43,9 +51,16 @@ func (m *SessionManager) getSession(id string) *Session {
 		return session
 	}
 	session = newSession(id)
+	session.manager = m
 	m.Sessions[id] = session
 	go session.run()
 	return session
+}
+
+func (m *SessionManager) removeSession(id string) {
+	m.Mu.Lock()
+	delete(m.Sessions, id)
+	m.Mu.Unlock()
 }
 
 func (s *Session) run() {
@@ -62,12 +77,17 @@ func (s *Session) run() {
 				delete(s.Clients, client)
 				close(client.send)
 			}
-
+			empty := len(s.Clients) == 0
 			s.Mu.Unlock()
-		case message := <-s.Broadcast:
+
+			if empty {
+				s.manager.removeSession(s.ID)
+				close(s.done)
+				return
+			}
+		case broadcast := <-s.Broadcast:
 			var msg Message
-			err := json.Unmarshal(message, &msg)
-			//fmt.Println("MESSAGE RECIEVED AND APPENDED")
+			err := json.Unmarshal(broadcast.payload, &msg)
 			if err != nil {
 				log.Printf("ignoring malformed message ")
 				continue
@@ -76,19 +96,24 @@ func (s *Session) run() {
 			s.Mu.Lock()
 			s.Messages = append(s.Messages, msg)
 			for client := range s.Clients {
-				if client.id == msg.ClientID {
+				if client == broadcast.sender {
 					continue
 				}
 				select {
-
-				case client.send <- message:
-
+				case client.send <- broadcast.payload:
 				default:
 					close(client.send)
 					delete(s.Clients, client)
 				}
 			}
+			empty := len(s.Clients) == 0
 			s.Mu.Unlock()
+
+			if empty {
+				s.manager.removeSession(s.ID)
+				close(s.done)
+				return
+			}
 
 		}
 

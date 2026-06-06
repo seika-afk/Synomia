@@ -18,7 +18,7 @@ func main() {
 	http.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(w, r)
 	})
-	err := http.ListenAndServe(*addr, nil)
+	err := http.ListenAndServe("0.0.0.0:4000", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
